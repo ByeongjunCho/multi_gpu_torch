@@ -12,13 +12,13 @@ import time
 import datetime
 import os
 
-from transformers import ElectraForSequenceClassification, ElectraTokenizer
+from transformers import BertTokenizerFast, BertForSequenceClassification
 from transformers import AdamW, get_linear_schedule_with_warmup
 
 # load model and tokenizer
 def get_model():
-    model = ElectraForSequenceClassification.from_pretrained("monologg/koelectra-small-discriminator")
-    tokenizer = ElectraTokenizer.from_pretrained("monologg/koelectra-small-discriminator")
+    model = BertForSequenceClassification.from_pretrained("kykim/bert-kor-base")
+    tokenizer = BertTokenizerFast.from_pretrained("kykim/bert-kor-base")
     return model, tokenizer
 
 # NSMC dataset class
@@ -37,9 +37,11 @@ class NSMCDataset(torch.utils.data.Dataset):
 
 def load_dataset(tokenizer):
     # load nsmc dataset
-    nsmc_train = pd.read_csv('../../data/nsmc/ratings_train.txt', sep='\t', encoding='utf-8')
-    nsmc_test = pd.read_csv('../../data/nsmc/ratings_train.txt', sep='\t', encoding='utf-8')
+    nsmc_train = pd.read_csv('./nsmc/ratings_train.txt', sep='\t', encoding='utf-8')
+    nsmc_test = pd.read_csv('./nsmc/ratings_test.txt', sep='\t', encoding='utf-8')
 
+    nsmc_train = nsmc_train[:10000]
+    nsmc_test = nsmc_test[:1000]
     nsmc_train['document'] = nsmc_train['document'].apply(str)
     nsmc_test['document'] = nsmc_test['document'].apply(str)
     # encoding
@@ -53,92 +55,67 @@ def load_dataset(tokenizer):
 
     return train_dataset, test_dataset
 
-class Trainer():
-    def __init__(self,
-                 model,
-                 optimizer,
-                 scheduler,
-                 train_loader,
-                 test_loader,
-                 device,
-                 args,
-                 ):
-        self.model = model
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.train_loader = train_loader
-        self.test_loader = test_loader
-        self.device = device
+def train(epoch, model, train_loader, optimizer, scheduler, device, args, writer=None):
+    '''
+
+    :param epoch: current epoch for summary writer
+    :return:
+    '''
+    train_loss = 0
+    correct = 0
+    total = 0
+
+    model.train()
+
+    for batch_idx, inputs in enumerate(train_loader):
+        start = time.time()
+        inputs = {k: v.cuda(device) for k, v in inputs.items()}
+        outputs = model(**inputs)
+
+        optimizer.zero_grad()
+        outputs.loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        train_loss += outputs.loss.item()
+        total += inputs['labels'].size(0)
+        correct += inputs['labels'].eq(outputs.logits.argmax(axis=1)).sum().item()
+
+        acc = 100 * correct / total
+        batch_time = time.time() - start
+
         if args.rank == 0:
-            self.writer = SummaryWriter(f'./runs/{args.arch}')
+            writer.add_scalar('Loss/train', outputs.loss.item(), epoch * len(train_loader) + batch_idx)
+            writer.add_scalars('Loss', {'train_loss': outputs.loss.item()}, epoch * len(train_loader) + batch_idx)
+            if batch_idx % 200 == 0:
+                print('=================== Training =======================')
+                print(f'total_steps: {batch_idx} \n'
+                      f'loss: {train_loss / (batch_idx + 1):.3f} \n'
+                      f'acc : {acc:.3f} \n'
+                      f'batch_time : {batch_time} \n'
+                      )
 
-
-        self.args = args
-
-    def train(self, epoch):
-        '''
-
-        :param epoch: current epoch for summary writer
-        :return:
-        '''
-        train_loss = 0
-        correct = 0
-        total = 0
-
-        self.model.train()
-
-        for batch_idx, inputs in enumerate(self.train_loader):
+def test(model, test_loader, device):
+    model.eval()
+    total = 0
+    total_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for inputs in test_loader:
             start = time.time()
-            inputs = {k: v.cuda(self.device) for k, v in inputs.items()}
-            outputs = self.model(**inputs)
+            inputs = {k: v.cuda(device) for k, v in inputs.items()}
+            outputs = model(**inputs)
 
-            self.optimizer.zero_grad()
-            outputs.loss.backward()
-            self.optimizer.step()
-            self.scheduler.step()
-
-            train_loss += outputs.loss.item()
             total += inputs['labels'].size(0)
             correct += inputs['labels'].eq(outputs.logits.argmax(axis=1)).sum().item()
+            total_loss += outputs.loss
 
             acc = 100 * correct / total
-            batch_time = time.time() - start
 
-            if self.args.rank == 0:
-                self.writer.add_scalar('Loss/train', outputs.loss.item(), epoch * len(self.train_loader) +batch_idx)
+    return acc, total_loss / total
 
-                if batch_idx % 200 == 0 and batch_idx:
-                    acc, loss = self.test()
-                    self.writer.add_scalar('Loss/test', loss,
-                                           epoch * len(self.train_loader) + batch_idx)
-                    self.writer.add_scalar('Accuracy/test', acc, epoch * len(self.train_loader) + batch_idx)
-                    self.writer.add_scalars('Loss', {'test_loss': loss, 'train_loss': outputs.loss.item()},
-                                            epoch * len(self.train_loader) + batch_idx)
-
-
-    def test(self):
-        self.model.eval()
-        total = 0
-        total_loss = 0
-        correct = 0
-        with torch.no_grad():
-            for inputs in self.test_loader:
-                start = time.time()
-                inputs = {k: v.cuda(self.device) for k, v in inputs.items()}
-                outputs = self.model(**inputs)
-
-                total += inputs['labels'].size(0)
-                correct += inputs['labels'].eq(outputs.logits.argmax(axis=1)).sum().item()
-                total_loss += outputs.loss
-
-                acc = 100 * correct / total
-                batch_time = time.time() - start
-
-        return acc, total_loss / total
-
-    def save_checkpoint(self, state, filename='checkpoint.pth.tar'):
-        torch.save(state, filename)
-
+def save_checkpoint(state, filename='checkpoint.pth.tar'):
+    torch.save(state, filename)
 
 def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
@@ -185,7 +162,6 @@ def main_worker(gpu, ngpus_per_node, args):
         test_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.num_workers, pin_memory=True)
 
-
     # define optimizer and scheduler
 
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -195,7 +171,8 @@ def main_worker(gpu, ngpus_per_node, args):
         {'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.lr)
-    scheduler = get_linear_schedule_with_warmup(optimizer, int(args.epochs * len(train_loader)/4), args.epochs*len(train_loader))
+    scheduler = get_linear_schedule_with_warmup(optimizer, int(args.epochs * len(train_loader) / 10),
+                                                args.epochs * len(train_loader))
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('The number of parameters of model is', num_params)
@@ -218,27 +195,29 @@ def main_worker(gpu, ngpus_per_node, args):
             print("=> no checkpoint found at '{}'".format(args.resume))
     else:
         start_epoch = 0
-
-
-    trainer = Trainer(model, optimizer, scheduler, train_loader, test_loader, device=gpu, args=args)
+    if args.rank == 0:
+        writer = SummaryWriter(f'./runs/{args.arch}')
+    else:
+        writer = None
     for epoch in range(start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        trainer.train(epoch)
-
-        # validation
-        acc, loss = trainer.test()
+        train(epoch, model, train_loader, optimizer, scheduler, gpu, args, writer)
 
         if args.rank == 0:
-            trainer.save_checkpoint({
+            # validation
+            acc, loss = test(model, test_loader, gpu)
+            print(f'test loss : {loss}  | accuracy : {acc}')
+            os.makedirs(f'./{args.arch}', exist_ok=True)
+            save_checkpoint({
                 'epoch': epoch + 1,
                 'accuracy': acc,
                 'loss': loss,
-                'state_dict': trainer.model.state_dict(),
-                'optimizer': trainer.optimizer.state_dict(),
-                'scheduler': trainer.scheduler.state_dict()
-            }, filename=f'./saved_models/epoch_{epoch}_{loss:.3f}_accuracy_{acc:.3f}.pt')
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict()
+            }, filename=f'./{args.arch}/epoch_{epoch}_{loss:.3f}_accuracy_{acc:.3f}.pt')
 
 def main():
     args = parser.parse_args()
@@ -259,13 +238,13 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='NSMC classification models')
-    parser.add_argument('--epochs', default=10, help='')
-    parser.add_argument('--arch', default='ELECTRA_NSMC', help='model architecture')
+    parser.add_argument('--epochs', default=15, help='')
+    parser.add_argument('--arch', default='BERT_NSMC_multiGPU', help='model architecture')
     parser.add_argument('--lr', default=5e-5, help='')
     parser.add_argument('--resume', default=None, help='')
-    parser.add_argument('--batch_size', type=int, default=256, help='')
-    parser.add_argument('--num_workers', type=int, default=4, help='')
-    parser.add_argument("--gpu_devices", nargs='+', default=[4,5,6,7], help="")
+    parser.add_argument('--batch_size', type=int, default=512, help='')
+    parser.add_argument('--num_workers', type=int, default=8, help='')
+    parser.add_argument("--gpu_devices", nargs='+', default=[0,1,2,3,4,5,6,7], help="")
 
     parser.add_argument('--gpu', default=None, type=int, help='GPU id to use.')
     parser.add_argument('--dist-url', default='tcp://127.0.0.1:3456', type=str, help='')

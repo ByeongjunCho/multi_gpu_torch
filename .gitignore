@@ -12,6 +12,9 @@
 /data
 /runs
 /saved_models
+/BERT_NSMC_multiGPU
+/BERT_NSMC_singleGPU
+/nsmc
 
 # IPython
 profile_default/
