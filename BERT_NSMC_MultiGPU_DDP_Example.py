@@ -12,13 +12,18 @@ import time
 import datetime
 import os
 
-from transformers import BertTokenizerFast, BertForSequenceClassification
+from transformers import BertForSequenceClassification, BertTokenizer
 from transformers import AdamW, get_linear_schedule_with_warmup
+
+# for delete warning message
+# https://stackoverflow.com/questions/62691279/how-to-disable-tokenizers-parallelism-true-false-warning
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # load model and tokenizer
 def get_model():
     model = BertForSequenceClassification.from_pretrained("kykim/bert-kor-base")
-    tokenizer = BertTokenizerFast.from_pretrained("kykim/bert-kor-base")
+    tokenizer = BertTokenizer.from_pretrained("kykim/bert-kor-base")
     return model, tokenizer
 
 # NSMC dataset class
