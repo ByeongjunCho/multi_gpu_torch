@@ -9,6 +9,7 @@ import apex
 from apex.parallel import DistributedDataParallel as DDP
 from apex.fp16_utils import *
 from apex import amp, optimizers
+from apex.multi_tensor_apply import multi_tensor_applier
 
 import pandas as pd
 import time

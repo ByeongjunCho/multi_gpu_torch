@@ -45,8 +45,6 @@ def load_dataset(tokenizer):
     nsmc_train = pd.read_csv('./nsmc/ratings_train.txt', sep='\t', encoding='utf-8')
     nsmc_test = pd.read_csv('./nsmc/ratings_test.txt', sep='\t', encoding='utf-8')
 
-    nsmc_train = nsmc_train[:10000]
-    nsmc_test = nsmc_test[:1000]
     nsmc_train['document'] = nsmc_train['document'].apply(str)
     nsmc_test['document'] = nsmc_test['document'].apply(str)
     # encoding
@@ -70,6 +68,7 @@ def train(epoch, model, train_loader, optimizer, scheduler, device, args, writer
     correct = 0
     total = 0
 
+    print_train = len(train_loader) // 10
     model.train()
 
     for batch_idx, inputs in enumerate(train_loader):
@@ -92,11 +91,11 @@ def train(epoch, model, train_loader, optimizer, scheduler, device, args, writer
         if args.rank == 0:
             writer.add_scalar('Loss/train', outputs.loss.item(), epoch * len(train_loader) + batch_idx)
             writer.add_scalars('Loss', {'train_loss': outputs.loss.item()}, epoch * len(train_loader) + batch_idx)
-            if batch_idx % 200 == 0:
+            if batch_idx % print_train == 0:
                 print('=================== Training =======================')
                 print(f'total_steps: {batch_idx} \n'
-                      f'loss: {train_loss / (batch_idx + 1):.3f} \n'
-                      f'acc : {acc:.3f} \n'
+                      f'loss: {train_loss / (batch_idx + 1)} \n'
+                      f'acc : {acc} \n'
                       f'batch_time : {batch_time} \n'
                       )
 
@@ -113,11 +112,11 @@ def test(model, test_loader, device):
 
             total += inputs['labels'].size(0)
             correct += inputs['labels'].eq(outputs.logits.argmax(axis=1)).sum().item()
-            total_loss += outputs.loss
+            total_loss += outputs.loss.item()
 
             acc = 100 * correct / total
 
-    return acc, total_loss / total
+    return acc, total_loss / len(test_loader)
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
@@ -214,7 +213,7 @@ def main_worker(gpu, ngpus_per_node, args):
             # validation
             acc, loss = test(model, test_loader, gpu)
             print(f'test loss : {loss}  | accuracy : {acc}')
-            os.makedirs(f'./{args.arch}', exist_ok=True)
+            os.makedirs(f'./saved_models/{args.arch}', exist_ok=True)
             save_checkpoint({
                 'epoch': epoch + 1,
                 'accuracy': acc,
@@ -222,7 +221,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()
-            }, filename=f'./{args.arch}/epoch_{epoch}_{loss:.3f}_accuracy_{acc:.3f}.pt')
+            }, filename=f'./saved_models/{args.arch}/epoch_{epoch}_{loss}_accuracy_{acc}.pt')
 
 def main():
     args = parser.parse_args()
@@ -244,10 +243,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='NSMC classification models')
     parser.add_argument('--epochs', default=15, help='')
-    parser.add_argument('--arch', default='BERT_NSMC_multiGPU', help='model architecture')
+    parser.add_argument('--arch', default='BERT_NSMC_multiGPU_test1', help='model architecture')
     parser.add_argument('--lr', default=5e-5, help='')
     parser.add_argument('--resume', default=None, help='')
-    parser.add_argument('--batch_size', type=int, default=512, help='')
+    parser.add_argument('--batch_size', type=int, default=256, help='')
     parser.add_argument('--num_workers', type=int, default=8, help='')
     parser.add_argument("--gpu_devices", nargs='+', default=[0,1,2,3,4,5,6,7], help="")
 
